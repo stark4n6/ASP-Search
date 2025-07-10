@@ -404,7 +404,7 @@ class App(tk.Tk):
             self.after(100, lambda: self.save_log_button.config(state=tk.NORMAL))
             return
 
-        script = "adamID_bundleID_lookup"
+        script = "asp-search"
         version = "v0.1"
         start_time = datetime.now()
         time_format_filename = "%Y%m%d_%H%M%S"
@@ -414,7 +414,7 @@ class App(tk.Tk):
             base_output_dir = selected_output_directory if selected_output_directory and os.path.isdir(selected_output_directory) else os.getcwd()
 
             # Create the timestamped output subfolder
-            timestamped_folder_name = f"ASPS_output_{start_time.strftime(time_format_filename)}"
+            timestamped_folder_name = f"asp-search_output_{start_time.strftime(time_format_filename)}"
             self.actual_output_dir = os.path.join(base_output_dir, timestamped_folder_name)
             
             try:
