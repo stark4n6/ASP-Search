@@ -206,7 +206,7 @@ class TextRedirector:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"ASP Search - App Store Package Search v0.1")
+        self.title(f"ASP (App Store Package) Search v0.1")
         self.resizable(False, False) 
         self.geometry("750x650") 
 
@@ -255,10 +255,10 @@ class App(tk.Tk):
     def open_github_link(self):
         """Opens the GitHub repository link in the default web browser."""
         try:
-            webbrowser.open_new("https://github.com/stark4n6")
+            webbrowser.open_new("https://github.com/stark4n6/asp-search")
         except Exception as e:
             self.log_queue.put(f"ERROR: Could not open GitHub link: {e}\n")
-            messagebox.showerror("Error", f"Failed to open GitHub link. Please visit https://github.com/stark4n6 manually.\nError: {e}")
+            messagebox.showerror("Error", f"Failed to open GitHub link. Please visit https://github.com/stark4n6/asp-search manually.\nError: {e}")
 
 
     def create_widgets(self):
@@ -349,7 +349,7 @@ class App(tk.Tk):
 
         self.output_text.config(yscrollcommand=self.scrollbar.set)
         
-        self.output_text.insert(tk.END, f"ASP Search (App Store Package Search) v0.1\nhttps://github.com/stark4n6\n\n")
+        self.output_text.insert(tk.END, f"ASP (App Store Package) Search v0.1\nhttps://github.com/stark4n6/asp-search\n\n")
 
         self.on_output_format_change()
 
