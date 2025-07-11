@@ -18,4 +18,15 @@ Only Pillow is needed (it's just for logo usage), it may be easier to just use t
 
 ### GUI Interface
 
+1. Input can be any of the following:
+   - A single BundleID
+   - A single AdamID
+   - A text file of BundleIDs (one per line)
+   - A test file of AdamIDs (one per line)
 
+2. Choose your lookup type accordingly
+3. Choose your output type option
+4. Choose your output folder path
+5. Execute!
+
+<p align="center"><img width="752" height="702" alt="Image" src="https://github.com/user-attachments/assets/59328e8a-67da-4718-b5f8-7acccf751774" /></p>
