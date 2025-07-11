@@ -11,4 +11,11 @@ The script works on Windows but may not have support on other OS's, feedback is 
 You may find timeout issues if too many searches are run, use at your own risk.
 
 ## Usage
-Coming soon!
+
+### Requirements
+`pip install -r requirements.txt`<p>
+Only Pillow is needed (it's just for logo usage), it may be easier to just use the .exe anyhow.
+
+### GUI Interface
+
+
