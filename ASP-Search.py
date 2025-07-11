@@ -397,9 +397,7 @@ class App(tk.Tk):
             except Exception as e:
                 self.logo_label.config(text=f"Error loading logo: {e}", background="red", foreground="white") 
                 self.log_queue.put(f"Error loading logo from '{self._format_path_for_display(self.logo_image_path)}': {e}\n")
-        else:
-            self.logo_label.config(text="[Your Logo Here]", background="blue", foreground="white")
-            self.log_queue.put("Logo path is empty or file does not exist. Displaying placeholder text.\n")
+
         # End Logo Handling
 
         # Buttons Frame (remains below the main_container_frame)
