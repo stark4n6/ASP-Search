@@ -12,6 +12,9 @@ import subprocess
 from PIL import Image, ImageTk
 import webbrowser
 
+app_name = "ASP (App Store Package) Search"
+version = "v1.0"
+
 # Define the desired column order for the database table and text file output
 DESIRED_COLUMN_ORDER = [
     "currentVersionReleaseDate",
@@ -41,7 +44,20 @@ PARSING_KEYS = [
     "primaryGenreName"
 ]
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 def set_input_id_list(set_input_id_items):
+    """
+    Reads a list of IDs from a file or treats the input as a single ID.
+    """
     input_id_list = []
     if os.path.exists(set_input_id_items):
         try:
@@ -57,6 +73,9 @@ def set_input_id_list(set_input_id_items):
     return None, input_id_list
 
 def get_data_from_itunes(lookup_value, lookup_type):
+    """
+    Fetches application data from the iTunes API based on AdamID or BundleID.
+    """
     response_json_data = None
     base_url = "http://itunes.apple.com/lookup?"
     
@@ -76,10 +95,15 @@ def get_data_from_itunes(lookup_value, lookup_type):
     return None, response_json_data
 
 def parse_itunes_data(bundle_data, parsing_keys_list, original_lookup_value, lookup_type):
+    """
+    Parses the JSON response from the iTunes API into a flat dictionary.
+    Handles cases where no data is found.
+    """
     parsed_results_flat = {}
     
     if "resultCount" in bundle_data:
         if bundle_data["resultCount"] == 0:
+            # No data found for the given ID
             if lookup_type == "adamId":
                 parsed_results_flat["adamId"] = original_lookup_value
                 parsed_results_flat["bundleId"] = "N/A"
@@ -89,8 +113,10 @@ def parse_itunes_data(bundle_data, parsing_keys_list, original_lookup_value, loo
 
             parsed_results_flat["error_message"] = f"No data found at itunes.apple.com for: {original_lookup_value} (lookup by {lookup_type})"
         else:
+            # Data found, process the first result
             data = (bundle_data["results"][0])
             
+            # Set adamId based on lookup type or trackId
             if lookup_type == "adamId":
                 parsed_results_flat["adamId"] = original_lookup_value
             elif lookup_type == "bundleId" and "trackId" in data:
@@ -98,9 +124,10 @@ def parse_itunes_data(bundle_data, parsing_keys_list, original_lookup_value, loo
             else:
                 parsed_results_flat["adamId"] = "N/A"
 
+            # Iterate through API response keys and extract desired ones
             for k, v in data.items():
                 if k == "trackId" and lookup_type == "bundleId":
-                    continue
+                    continue # Skip trackId if lookup was by bundleId, as we've already handled adamId
                 if k == "bundleId": 
                     parsed_results_flat["bundleId"] = v
                     continue 
@@ -110,8 +137,13 @@ def parse_itunes_data(bundle_data, parsing_keys_list, original_lookup_value, loo
     return parsed_results_flat
 
 def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_columns):
+    """
+    Creates a new SQLite table with the desired column order or reorders an existing one.
+    Data from the old table is migrated to the new one.
+    """
     temp_table_name = f"{table_name}_temp"
 
+    # Define column definitions for the new temporary table
     column_definitions = []
     for col in desired_order:
         if col == "adamId":
@@ -126,10 +158,12 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
     except sqlite3.Error as e:
         return f"Error creating temporary table: {e}", False
 
+    # Get existing column names from the original table
     cursor.execute(f"PRAGMA table_info({table_name})")
     old_table_info = cursor.fetchall()
     old_column_names = [info[1] for info in old_table_info]
 
+    # Map old column names to new ones if necessary (e.g., 'bundle_id_lookup' to 'adamId')
     column_mapping = {
         "bundle_id_lookup": "adamId",
     }
@@ -137,6 +171,7 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
     columns_to_copy_select = []
     columns_to_copy_insert = []
 
+    # Prepare lists of columns for INSERT and SELECT statements
     for new_col in desired_order:
         if new_col in old_column_names:
             columns_to_copy_select.append(new_col)
@@ -151,6 +186,7 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
             columns_to_copy_select.append("bundleId")
             columns_to_copy_insert.append("bundleId")
 
+    # Remove duplicates and maintain order for insert/select columns
     temp_insert = []
     temp_select = []
     seen = set()
@@ -163,6 +199,7 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
     columns_to_copy_insert = temp_insert
     columns_to_copy_select = temp_select
 
+    # Check if the original table exists and copy data
     cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'")
     if cursor.fetchone():
         if columns_to_copy_insert:
@@ -176,6 +213,7 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
                 conn.commit()
                 return f"Error migrating data: {e}", False
 
+    # Drop the old table
     drop_old_table_sql = f"DROP TABLE IF EXISTS {table_name}"
     try:
         cursor.execute(drop_old_table_sql)
@@ -183,6 +221,7 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
     except sqlite3.Error as e:
         return f"Error dropping old table: {e}", False
 
+    # Rename the temporary table to the original table name
     rename_table_sql = f"ALTER TABLE {temp_table_name} RENAME TO {table_name}"
     try:
         cursor.execute(rename_table_sql)
@@ -193,6 +232,10 @@ def create_and_reorder_table(conn, cursor, table_name, desired_order, existing_c
     return None, True
 
 class TextRedirector:
+    """
+    A custom stream handler to redirect stdout/stderr to a Tkinter Text widget
+    via a queue, ensuring thread-safe updates.
+    """
     def __init__(self, widget, q):
         self.widget = widget
         self.q = q
@@ -204,23 +247,46 @@ class TextRedirector:
         pass
 
 class App(tk.Tk):
+    """
+    Main application class for the BundleID/AdamID Lookup GUI.
+    """
     def __init__(self):
         super().__init__()
-        self.title(f"ASP (App Store Package) Search v0.1")
+        self.title(f"{app_name} {version}")
         self.resizable(False, False) 
         self.geometry("750x650") 
 
-        self.actual_output_dir = None
-        self.logo_tk = None 
+        # --- Set application icon ---
+        # Ensure 'app_icon.png' is in the same directory as your script
+        # You can use different sizes for better display on various platforms
+        icon_path = resource_path("assets/stark4n6.ico") # Replace with your icon file name
+        if os.path.exists(icon_path):
+            try:
+                # Load the image using PIL
+                icon_image = Image.open(icon_path)
+                # Create a PhotoImage from the PIL image
+                self.icon_photo = ImageTk.PhotoImage(icon_image)
+                # Set the window icon
+                self.iconphoto(True, self.icon_photo)
+            except Exception as e:
+                print(f"Warning: Could not load application icon from '{icon_path}': {e}")
+        else:
+            print(f"Warning: Application icon file '{icon_path}' not found.")
+        # --- End icon setting ---
 
-        self.logo_image_path = "aspis.png" 
+        self.actual_output_dir = None # Stores the actual directory where files will be saved
+        self.logo_tk = None # To hold the PhotoImage object for the logo
 
-        self.log_queue = queue.Queue() 
+        self.logo_image_path = resource_path("assets/asp.png") # Path to the logo image
+
+        self.log_queue = queue.Queue() # Queue for thread-safe logging to the Text widget
 
         self.create_widgets()
         self.create_menu() # Call the new method to create the menu
         
+        # Start processing the log queue for GUI updates
         self.process_queue() 
+        # Redirect stdout and stderr to the custom TextRedirector
         sys.stdout = TextRedirector(self.output_text, self.log_queue)
         sys.stderr = TextRedirector(self.output_text, self.log_queue)
 
@@ -231,14 +297,20 @@ class App(tk.Tk):
         return path
 
     def process_queue(self):
+        """
+        Processes messages from the log queue and updates the Text widget.
+        Called periodically by Tkinter's after method.
+        """
         while not self.log_queue.empty():
             line = self.log_queue.get_nowait()
             self.output_text.insert(tk.END, line)
-            self.output_text.see(tk.END)
-        self.after(100, self.process_queue)
+            self.output_text.see(tk.END) # Auto-scroll to the end
+        self.after(100, self.process_queue) # Schedule itself to run again after 100ms
 
     def create_menu(self):
-        # Create the main menu bar
+        """
+        Creates the application's menu bar with File and Help options.
+        """
         menu_bar = tk.Menu(self)
         self.config(menu=menu_bar) # Attach the menu bar to the window
 
@@ -262,6 +334,9 @@ class App(tk.Tk):
 
 
     def create_widgets(self):
+        """
+        Creates and arranges all the GUI widgets.
+        """
         # Main container for left panel (input/output) and right panel (logo)
         main_container_frame = tk.Frame(self)
         main_container_frame.pack(fill="x", padx=10, pady=10) 
@@ -273,7 +348,7 @@ class App(tk.Tk):
         # Input Frame - Now inside left_panel_frame
         input_frame = ttk.LabelFrame(left_panel_frame, text="Input Details", padding="10")
         input_frame.pack(padx=5, pady=5, fill="x", anchor="nw") 
-        input_frame.grid_columnconfigure(1, weight=1) 
+        input_frame.grid_columnconfigure(1, weight=1) # Allows the entry widget to expand
 
         ttk.Label(input_frame, text="AdamID/BundleID or File:").grid(row=0, column=0, sticky="w", pady=5)
         self.input_id_entry = ttk.Entry(input_frame, width=35) 
@@ -292,6 +367,7 @@ class App(tk.Tk):
 
         ttk.Label(output_options_frame, text="Output Format:").grid(row=0, column=0, sticky="w", pady=5)
         self.output_format_var = tk.StringVar(value="console")
+        # Trace changes to the output format variable to enable/disable folder browsing
         self.output_format_var.trace_add("write", self.on_output_format_change)
 
         ttk.Radiobutton(output_options_frame, text="Console", variable=self.output_format_var, value="console").grid(row=0, column=1, sticky="w", padx=5)
@@ -318,7 +394,6 @@ class App(tk.Tk):
                 resized_image = original_image.resize((logo_size, logo_size), Image.LANCZOS) 
                 self.logo_tk = ImageTk.PhotoImage(resized_image)
                 self.logo_label.config(image=self.logo_tk)
-                self.log_queue.put("Logo loaded successfully.\n")
             except Exception as e:
                 self.logo_label.config(text=f"Error loading logo: {e}", background="red", foreground="white") 
                 self.log_queue.put(f"Error loading logo from '{self._format_path_for_display(self.logo_image_path)}': {e}\n")
@@ -349,22 +424,31 @@ class App(tk.Tk):
 
         self.output_text.config(yscrollcommand=self.scrollbar.set)
         
-        self.output_text.insert(tk.END, f"ASP (App Store Package) Search v0.1\nhttps://github.com/stark4n6/asp-search\n\n")
+        self.output_text.insert(tk.END, f"{app_name} {version}\nhttps://github.com/stark4n6/asp-search\n\n")
 
+        # Initialize the state of output folder widgets based on default output format
         self.on_output_format_change()
 
     def on_output_format_change(self, *args):
+        """
+        Enables or disables the output folder browsing widgets based on the selected
+        output format (console vs. file/db).
+        """
         current_format = self.output_format_var.get()
         if current_format == 'console':
             self.browse_output_folder_button.config(state=tk.DISABLED)
+            # Temporarily enable to clear, then disable
             self.output_folder_entry.config(state=tk.NORMAL) 
             self.output_folder_var.set("")
             self.output_folder_entry.config(state=tk.DISABLED)
         else:
             self.browse_output_folder_button.config(state=tk.NORMAL)
-            self.output_folder_entry.config(state=tk.DISABLED)
+            self.output_folder_entry.config(state=tk.DISABLED) # Keep entry disabled for manual input
 
     def browse_file(self):
+        """
+        Opens a file dialog for the user to select an input ID file.
+        """
         file_path = filedialog.askopenfilename(
             title="Select Input ID File",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
@@ -374,25 +458,38 @@ class App(tk.Tk):
             self.input_id_entry.insert(0, file_path)
 
     def browse_output_folder(self):
+        """
+        Opens a directory dialog for the user to select an output folder.
+        """
         folder_selected = filedialog.askdirectory(title="Select Output Folder")
         if folder_selected:
+            # Temporarily enable to set value, then disable
             self.output_folder_entry.config(state=tk.NORMAL) 
             self.output_folder_var.set(folder_selected)
             self.output_folder_entry.config(state=tk.DISABLED) 
 
     def run_lookup_in_thread(self):
-        self.output_text.delete(1.0, tk.END)
+        """
+        Initiates the lookup process in a separate thread to keep the GUI responsive.
+        """
+        self.output_text.delete(1.0, tk.END) # Clear previous output
         self.output_text.insert(tk.END, "Starting lookup...\n")
         
+        # Disable buttons during lookup
         self.run_button.config(state=tk.DISABLED)
         self.save_log_button.config(state=tk.DISABLED)
 
-        self.actual_output_dir = None 
+        self.actual_output_dir = None # Reset actual output directory
 
+        # Start the lookup in a new thread
         thread = threading.Thread(target=self._run_lookup)
         thread.start()
 
     def _run_lookup(self):
+        """
+        Contains the core logic for fetching, parsing, and saving data.
+        This method runs in a separate thread.
+        """
         input_id_value = self.input_id_entry.get()
         lookup_type = self.lookup_type_var.get()
         output_format = self.output_format_var.get()
@@ -409,16 +506,17 @@ class App(tk.Tk):
         start_time = datetime.now()
         time_format_filename = "%Y%m%d_%H%M%S"
         
+        # Handle output directory creation for file/db formats
         if (output_format == 'txt' or output_format == 'db' or output_format == 'both'):
-            # Determine the base output directory
+            # Determine the base output directory (selected by user or current working directory)
             base_output_dir = selected_output_directory if selected_output_directory and os.path.isdir(selected_output_directory) else os.getcwd()
 
             # Create the timestamped output subfolder
-            timestamped_folder_name = f"asp-search_output_{start_time.strftime(time_format_filename)}"
+            timestamped_folder_name = f"asp-search_out_{start_time.strftime(time_format_filename)}"
             self.actual_output_dir = os.path.join(base_output_dir, timestamped_folder_name)
             
             try:
-                os.makedirs(self.actual_output_dir, exist_ok=True)
+                os.makedirs(self.actual_output_dir, exist_ok=True) # Create the directory if it doesn't exist
                 self.log_queue.put(f"Output folder created at: {self._format_path_for_display(self.actual_output_dir)}\n")
             except Exception as e:
                 self.log_queue.put(f"ERROR: Could not create output folder '{self._format_path_for_display(self.actual_output_dir)}': {e}. Falling back to console output.\n")
@@ -428,6 +526,7 @@ class App(tk.Tk):
         output_filename = None
         database_filename = None
         if self.actual_output_dir:
+            # Construct full paths for output files within the new timestamped folder
             output_filename = os.path.join(self.actual_output_dir, f"{script}_output_{start_time.strftime(time_format_filename)}.txt")
             database_filename = os.path.join(self.actual_output_dir, f"{script}_output_{start_time.strftime(time_format_filename)}.db")
 
@@ -437,6 +536,7 @@ class App(tk.Tk):
         conn = None
         cursor = None
 
+        # Setup text file output stream
         if output_format == 'txt' or output_format == 'both':
             if output_filename:
                 try:
@@ -451,16 +551,19 @@ class App(tk.Tk):
         elif output_format == 'console':
             report_output_stream = sys.stdout
 
+        # Write initial report headers to the output stream
         if report_output_stream:
             report_output_stream.write(f"{script} {version} results\n")
             report_output_stream.write(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
+        # Setup SQLite database connection
         if output_format == 'db' or output_format == 'both':
             if database_filename:
                 try:
                     conn = sqlite3.connect(database_filename)
                     cursor = conn.cursor()
 
+                    # Check and reorder/create table if schema mismatch or table doesn't exist
                     cursor.execute(f"PRAGMA table_info({table_name})")
                     existing_columns_info = cursor.fetchall()
                     existing_column_names = [info[1] for info in existing_columns_info]
@@ -496,6 +599,7 @@ class App(tk.Tk):
             else:
                 self.log_queue.put("ERROR: Database filename not determined. Skipping database output.\n")
 
+        # Get the list of IDs to process
         error, input_id_list = set_input_id_list(input_id_value)
         if error:
             self.log_queue.put(f"ERROR: {error}\n")
@@ -506,11 +610,13 @@ class App(tk.Tk):
 
         processed_results_for_output = {}
 
+        # Process each ID
         for current_id in input_id_list:
             self.log_queue.put(f"Processing ID: {current_id}\n")
             err, bundleID_data = get_data_from_itunes(current_id, lookup_type)
             if err:
                 self.log_queue.put(err + "\n")
+                # Create a placeholder entry for failed lookups
                 if lookup_type == "adamId":
                     parsed_results = {"adamId": current_id, "bundleId": "N/A", "error_message": err}
                 else:
@@ -520,16 +626,18 @@ class App(tk.Tk):
             elif bundleID_data is not None:
                 flat_parsed_data = parse_itunes_data(bundleID_data, PARSING_KEYS, current_id, lookup_type)
                 
+                # Determine the key for text output dictionary
                 text_output_key = flat_parsed_data.get("adamId")
                 if text_output_key == "N/A" or text_output_key is None:
                     text_output_key = f"LOOKUP_ERROR_{lookup_type}_{current_id}"
                 processed_results_for_output[text_output_key] = flat_parsed_data
                 
+                # Insert/update data in SQLite database if connection is active
                 if conn and cursor: 
                     db_adam_id_for_pk = flat_parsed_data.get("adamId")
                     if db_adam_id_for_pk == "N/A" or db_adam_id_for_pk is None:
                         db_adam_id_for_pk = f"LOOKUP_FAIL_{lookup_type}_{current_id}"
-                        flat_parsed_data["adamId"] = db_adam_id_for_pk
+                        flat_parsed_data["adamId"] = db_adam_id_for_pk # Ensure adamId is set for PK
 
                     columns = []
                     values = []
@@ -551,7 +659,7 @@ class App(tk.Tk):
             else:
                 self.log_queue.put(f"Skipping processing and output for {current_id}: Failed to fetch data from iTunes API (unknown error).\n")
 
-
+        # Write processed results to the text output stream
         if report_output_stream: 
             header_id_type = "adamId" if lookup_type == "adamId" else "bundleId"
 
@@ -591,17 +699,23 @@ class App(tk.Tk):
                 report_output_stream.close()
                 self.log_queue.put(f"Text output saved to {self._format_path_for_display(output_filename)}\n")
 
+        # Close database connection if active
         if conn:
             conn.close()
             self.log_queue.put(f"Database '{self._format_path_for_display(database_filename)}' closed.\n")
 
         self.log_queue.put("Lookup process completed.\n")
+        # Re-enable buttons after lookup is complete
         self.after(100, lambda: self.run_button.config(state=tk.NORMAL)) 
         self.after(100, lambda: self.save_log_button.config(state=tk.NORMAL))
         
+        # Show completion popup
         self.after(200, self.show_completion_popup)
 
     def show_completion_popup(self):
+        """
+        Displays a completion message to the user and offers to open the output folder.
+        """
         current_format = self.output_format_var.get()
         if current_format != 'console' and self.actual_output_dir and os.path.isdir(self.actual_output_dir):
             response = messagebox.askyesno(
@@ -616,6 +730,9 @@ class App(tk.Tk):
             messagebox.showinfo("Lookup Complete", "Lookup process completed. Output files may not have been saved due to an invalid path.")
 
     def open_output_folder(self, path):
+        """
+        Opens the specified folder using the default file explorer for the OS.
+        """
         try:
             if sys.platform == "win32":
                 os.startfile(path)
@@ -627,6 +744,9 @@ class App(tk.Tk):
             messagebox.showerror("Error Opening Folder", f"Could not open folder:\n{self._format_path_for_display(path)}\nError: {e}")
 
     def save_log(self):
+        """
+        Saves the content of the console output text area to a text file.
+        """
         file_path = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
