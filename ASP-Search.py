@@ -13,7 +13,7 @@ from PIL import Image, ImageTk
 import webbrowser
 
 app_name = "ASP (App Store Package) Search"
-version = "v1.0"
+version = "v1.1"
 
 # Define the desired column order for the database table and text file output
 DESIRED_COLUMN_ORDER = [
@@ -44,6 +44,9 @@ PARSING_KEYS = [
     "primaryGenreName"
 ]
 
+# New constant for the metadata table
+METADATA_TABLE_NAME = "metadata"
+
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
@@ -57,17 +60,25 @@ def resource_path(relative_path):
 def set_input_id_list(set_input_id_items):
     """
     Reads a list of IDs from a file or treats the input as a single ID.
+    Deduplicates lines if the input is a file.
     """
     input_id_list = []
     if os.path.exists(set_input_id_items):
         try:
             with open(set_input_id_items, 'r') as f:
+                # Use a set for deduplication
+                unique_lines = set()
                 for line in f:
                     line = line.strip()
                     if line:
-                        input_id_list.append(line)
+                        unique_lines.add(line)
+                input_id_list = list(unique_lines) # Convert back to list
         except Exception as e:
             return f"error: {e}", []
+    # Check if the input is already a list (e.g., passed directly)
+    elif isinstance(set_input_id_items, list):
+        # Deduplicate the provided list
+        input_id_list = list(set(item.strip() for item in set_input_id_items if item.strip()))
     else:
         input_id_list = [set_input_id_items]
     return None, input_id_list
@@ -367,7 +378,7 @@ class App(tk.Tk):
 
         ttk.Label(output_options_frame, text="Output Format:").grid(row=0, column=0, sticky="w", pady=5)
         self.output_format_var = tk.StringVar(value="console")
-        # Trace changes to the output format variable to enable/disable folder browsing
+        # Trace changes to the output format variable to enable/disable folder Browse
         self.output_format_var.trace_add("write", self.on_output_format_change)
 
         ttk.Radiobutton(output_options_frame, text="Console", variable=self.output_format_var, value="console").grid(row=0, column=1, sticky="w", padx=5)
@@ -429,7 +440,7 @@ class App(tk.Tk):
 
     def on_output_format_change(self, *args):
         """
-        Enables or disables the output folder browsing widgets based on the selected
+        Enables or disables the output folder Browse widgets based on the selected
         output format (console vs. file/db).
         """
         current_format = self.output_format_var.get()
@@ -471,7 +482,6 @@ class App(tk.Tk):
         Initiates the lookup process in a separate thread to keep the GUI responsive.
         """
         self.output_text.delete(1.0, tk.END) # Clear previous output
-        self.output_text.insert(tk.END, "Starting lookup...\n")
         
         # Disable buttons during lookup
         self.run_button.config(state=tk.DISABLED)
@@ -500,10 +510,17 @@ class App(tk.Tk):
             return
 
         script = "asp-search"
-        version = "v0.1"
         start_time = datetime.now()
         time_format_filename = "%Y%m%d_%H%M%S"
         
+        # --- Start: Console Header (Always print to GUI console) ---
+        self.log_queue.put(f"{app_name} {version}\n")
+        self.log_queue.put(f"https://github.com/stark4n6/asp-search\n")
+        self.log_queue.put(f"--- Lookup Started ---\n")
+        self.log_queue.put(f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        # --- End: Console Header ---
+
+
         # Handle output directory creation for file/db formats
         if (output_format == 'txt' or output_format == 'db' or output_format == 'both'):
             # Determine the base output directory (selected by user or current working directory)
@@ -539,20 +556,16 @@ class App(tk.Tk):
             if output_filename:
                 try:
                     report_output_stream = open(output_filename, "w+")
-                    self.log_queue.put(f"Text output will be saved to {self._format_path_for_display(output_filename)}\n")
+                    self.log_queue.put(f"Text output will be saved to {self._format_path_for_display(output_filename)}\n\n")
+                    # Write initial report headers to the text file output stream
+                    report_output_stream.write(f"{app_name} {version}\nhttps://github.com/stark4n6/asp-search\n--- Lookup Started ---\n")
+                    report_output_stream.write(f"Start: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                 except IOError as e:
                     self.log_queue.put(f"ERROR: Could not open text file for writing: {e}\n")
-                    report_output_stream = None
+                    report_output_stream = None # Indicate that file writing failed
             else:
-                self.log_queue.put("ERROR: Text output filename not determined. Falling back to console.\n")
-                report_output_stream = sys.stdout
-        elif output_format == 'console':
-            report_output_stream = sys.stdout
-
-        # Write initial report headers to the output stream
-        if report_output_stream:
-            report_output_stream.write(f"{script} {version} results\n")
-            report_output_stream.write(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                self.log_queue.put("ERROR: Text output filename not determined. Skipping text file output.\n")
+                report_output_stream = None # No file output if filename not determined
 
         # Setup SQLite database connection
         if output_format == 'db' or output_format == 'both':
@@ -561,7 +574,33 @@ class App(tk.Tk):
                     conn = sqlite3.connect(database_filename)
                     cursor = conn.cursor()
 
-                    # Check and reorder/create table if schema mismatch or table doesn't exist
+                    # Create metadata table if it doesn't exist
+                    cursor.execute(f'''
+                        CREATE TABLE IF NOT EXISTS {METADATA_TABLE_NAME} (
+                            key TEXT PRIMARY KEY,
+                            value TEXT
+                        )
+                    ''')
+                    conn.commit()
+
+                    # Insert/Update header details into metadata table
+                    current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    metadata_items = {
+                        "AppName": app_name,
+                        "Version": version,
+                        "Source": "https://github.com/stark4n6/asp-search",
+                        "LookupStartTime": current_time_str,
+                        "LookupType": lookup_type,
+                        "InputIDValue": input_id_value,
+                    }
+
+                    for key, value in metadata_items.items():
+                        cursor.execute(f"INSERT OR REPLACE INTO {METADATA_TABLE_NAME} (key, value) VALUES (?, ?)", (key, value))
+                    conn.commit()
+                    self.log_queue.put(f"Metadata (header details) stored in '{METADATA_TABLE_NAME}' table.\n")
+
+
+                    # Check and reorder/create app_bundle_data table if schema mismatch or table doesn't exist
                     cursor.execute(f"PRAGMA table_info({table_name})")
                     existing_columns_info = cursor.fetchall()
                     existing_column_names = [info[1] for info in existing_columns_info]
@@ -578,7 +617,7 @@ class App(tk.Tk):
                                 break
 
                     if needs_reorder:
-                        self.log_queue.put(f"Schema mismatch detected or table '{table_name}' does not exist. Reordering/creating table with desired column order...\n")
+                        #self.log_queue.put(f"Schema mismatch detected or table '{table_name}' does not exist. Reordering/creating table with desired column order...\n")
                         err, success = create_and_reorder_table(conn, cursor, table_name, DESIRED_COLUMN_ORDER, existing_column_names)
                         if not success:
                             self.log_queue.put(f"Failed to reorder/create database table: {err}. Skipping database output.\n")
@@ -587,7 +626,7 @@ class App(tk.Tk):
                             cursor = None
                     
                     if conn:
-                        self.log_queue.put(f"Database '{self._format_path_for_display(database_filename)}' opened/created. Table '{table_name}' ensured.\n")
+                        self.log_queue.put(f"Database '{self._format_path_for_display(database_filename)}' opened/created. Table '{table_name}' ensured.\n\n")
 
                 except sqlite3.Error as e:
                     self.log_queue.put(f"SQLite error during database setup: {e}. Skipping database output.\n")
@@ -597,7 +636,7 @@ class App(tk.Tk):
             else:
                 self.log_queue.put("ERROR: Database filename not determined. Skipping database output.\n")
 
-        # Get the list of IDs to process
+        # Get the list of IDs to process (and deduplicate)
         error, input_id_list = set_input_id_list(input_id_value)
         if error:
             self.log_queue.put(f"ERROR: {error}\n")
@@ -605,12 +644,21 @@ class App(tk.Tk):
             self.after(100, lambda: self.save_log_button.config(state=tk.NORMAL))
             self.after(200, self.show_completion_popup)
             return
+        
+        if not input_id_list:
+            self.log_queue.put("No valid IDs found to process after deduplication (if applicable).\n")
+            self.after(100, lambda: self.run_button.config(state=tk.NORMAL))
+            self.after(100, lambda: self.save_log_button.config(state=tk.NORMAL))
+            self.after(200, self.show_completion_popup)
+            return
 
         processed_results_for_output = {}
+        total_unique_ids = len(input_id_list) # This is the total number of unique IDs
 
         # Process each ID
-        for current_id in input_id_list:
-            self.log_queue.put(f"Processing ID: {current_id}\n")
+        for i, current_id in enumerate(input_id_list):
+            current_lookup_num = i + 1
+            self.log_queue.put(f"Processing ID: {current_id} ({current_lookup_num}/{total_unique_ids})\n")
             err, bundleID_data = get_data_from_itunes(current_id, lookup_type)
             if err:
                 self.log_queue.put(err + "\n")
@@ -619,22 +667,34 @@ class App(tk.Tk):
                     parsed_results = {"adamId": current_id, "bundleId": "N/A", "error_message": err}
                 else:
                     parsed_results = {"adamId": "N/A", "bundleId": current_id, "error_message": err}
-                processed_results_for_output[f"LOOKUP_ERROR_{lookup_type}_{current_id}"] = parsed_results
+                
+                # Use current_id as the key for failed lookups in processed_results_for_output
+                processed_results_for_output[current_id] = parsed_results
 
             elif bundleID_data is not None:
                 flat_parsed_data = parse_itunes_data(bundleID_data, PARSING_KEYS, current_id, lookup_type)
                 
-                # Determine the key for text output dictionary
-                text_output_key = flat_parsed_data.get("adamId")
-                if text_output_key == "N/A" or text_output_key is None:
-                    text_output_key = f"LOOKUP_ERROR_{lookup_type}_{current_id}"
-                processed_results_for_output[text_output_key] = flat_parsed_data
+                # Determine the key for output dictionary based on lookup type or actual AdamId/BundleId
+                if lookup_type == "adamId":
+                    # For AdamID lookup, use AdamID from the parsed data
+                    output_key = flat_parsed_data.get("adamId", current_id)
+                else: # lookup_type == "bundleId"
+                    # For BundleID lookup, use BundleID from the parsed data
+                    # If found, it will have adamId, if not, it will have the original bundleId
+                    output_key = flat_parsed_data.get("bundleId", current_id)
+
+                if output_key == "N/A" or output_key is None:
+                    # Fallback to the original lookup ID if both adamId and bundleId are N/A
+                    output_key = current_id 
+                    
+                processed_results_for_output[output_key] = flat_parsed_data
                 
                 # Insert/update data in SQLite database if connection is active
                 if conn and cursor: 
                     db_adam_id_for_pk = flat_parsed_data.get("adamId")
                     if db_adam_id_for_pk == "N/A" or db_adam_id_for_pk is None:
-                        db_adam_id_for_pk = f"LOOKUP_FAIL_{lookup_type}_{current_id}"
+                        # If no adamId, use a unique identifier for the primary key
+                        db_adam_id_for_pk = f"NO_ADAMID_{lookup_type}_{current_id}"
                         flat_parsed_data["adamId"] = db_adam_id_for_pk # Ensure adamId is set for PK
 
                     columns = []
@@ -657,108 +717,146 @@ class App(tk.Tk):
             else:
                 self.log_queue.put(f"Skipping processing and output for {current_id}: Failed to fetch data from iTunes API (unknown error).\n")
 
-        # Write processed results to the text output stream
-        if report_output_stream: 
-            header_id_type = "adamId" if lookup_type == "adamId" else "bundleId"
-
+        # Write processed results to the text output stream (file)
+        if report_output_stream: # This will be true only if 'txt' or 'both' and file was successfully opened
             for key_for_output_dict, data_to_write in processed_results_for_output.items():
-                display_id_for_header = None
-                if header_id_type == "adamId":
-                    display_id_for_header = data_to_write.get("adamId")
-                    if display_id_for_header == "N/A" or display_id_for_header is None:
-                        if key_for_output_dict.startswith("LOOKUP_ERROR_adamId_"):
-                            display_id_for_header = key_for_output_dict.replace("LOOKUP_ERROR_adamId_", "")
-                        elif key_for_output_dict.startswith("LOOKUP_FAIL_adamId_"):
-                            display_id_for_header = key_for_output_dict.replace("LOOKUP_FAIL_adamId_", "")
-                        else:
-                            display_id_for_header = key_for_output_dict
-                else:
-                    display_id_for_header = data_to_write.get("bundleId")
-                    if display_id_for_header == "N/A" or display_id_for_header is None:
-                        if key_for_output_dict.startswith("LOOKUP_ERROR_bundleId_"):
-                            display_id_for_header = key_for_output_dict.replace("LOOKUP_ERROR_bundleId_", "")
-                        elif key_for_output_dict.startswith("LOOKUP_FAIL_bundleId_"):
-                            display_id_for_header = key_for_output_dict.replace("LOOKUP_FAIL_bundleId_", "")
-                        else:
-                            display_id_for_header = key_for_output_dict
-
-                report_output_stream.write(f"--- Data for {header_id_type}: {display_id_for_header} ---\n")
+                display_id_for_header = key_for_output_dict # Use the dictionary key which should be the AdamId or original BundleId
+                
+                report_output_stream.write(f"--- Data for {lookup_type}: {display_id_for_header} ---\n")
 
                 for col in DESIRED_COLUMN_ORDER:
                     value = data_to_write.get(col)
                     if value is not None:
-                        if col == "error_message":
-                            report_output_stream.write(f"{value}\n")
-                        else:
-                            report_output_stream.write(f"{col}: {value}\n")
-                report_output_stream.write("\n")
+                        report_output_stream.write(f"{col}: {value}\n")
+                    else:
+                        report_output_stream.write(f"{col}: N/A\n") # Ensure all columns are present
 
-            if report_output_stream != sys.stdout:
-                report_output_stream.close()
-                self.log_queue.put(f"Text output saved to {self._format_path_for_display(output_filename)}\n")
+                report_output_stream.write("\n") # Add a blank line for readability
 
-        # Close database connection if active
-        if conn:
-            conn.close()
-            self.log_queue.put(f"Database '{self._format_path_for_display(database_filename)}' closed.\n")
+            end_time = datetime.now()
+            duration = end_time - start_time
+            report_output_stream.write(f"--- Lookup Finished ---\n")
+            report_output_stream.write(f"Total time taken: {duration}\n")
+            report_output_stream.write(f"Timestamp: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
+        # Write processed results to the console output (GUI Text widget)
+        # This block now handles console output for both AdamID and BundleID uniformly
+        # This will always execute for displaying results in the GUI console
+        for key_for_output_dict, data_to_write in processed_results_for_output.items():
+            display_id_for_header = key_for_output_dict # Use the dictionary key which should be the AdamId or original BundleId
+            
+            self.log_queue.put(f"--- Data for {lookup_type}: {display_id_for_header} ---\n")
+
+            for col in DESIRED_COLUMN_ORDER:
+                value = data_to_write.get(col)
+                if value is not None:
+                    self.log_queue.put(f"{col}: {value}\n")
+                else:
+                    self.log_queue.put(f"{col}: N/A\n") # Ensure all columns are present
+
+            self.log_queue.put("\n") # Add a blank line for readability
+
+        # Add end timestamp and duration to console output (ALWAYS ONCE)
+        end_time = datetime.now()
+        duration = end_time - start_time
+        self.log_queue.put(f"--- Lookup Finished ---\n")
+        self.log_queue.put(f"Total time taken: {duration}\n")
+        self.log_queue.put(f"Timestamp: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         self.log_queue.put("Lookup process completed.\n")
-        # Re-enable buttons after lookup is complete
-        self.after(100, lambda: self.run_button.config(state=tk.NORMAL)) 
-        self.after(100, lambda: self.save_log_button.config(state=tk.NORMAL))
+
+        # Update metadata table with end time and duration
+        if conn and cursor:
+            try:
+                end_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                duration_str = str(duration)
+                cursor.execute(f"INSERT OR REPLACE INTO {METADATA_TABLE_NAME} (key, value) VALUES (?, ?)", ("LookupEndTime", end_time_str))
+                cursor.execute(f"INSERT OR REPLACE INTO {METADATA_TABLE_NAME} (key, value) VALUES (?, ?)", ("TotalDuration", duration_str))
+                conn.commit()
+                self.log_queue.put(f"\nFinal metadata (end time, duration) stored in '{METADATA_TABLE_NAME}' table.\n")
+            except sqlite3.Error as e:
+                self.log_queue.put(f"Error updating metadata table with end details: {e}\n")
+
+
+        # Close connections and streams
+        if report_output_stream: # This will be true only if 'txt' or 'both' and file was successfully opened
+            try:
+                report_output_stream.close()
+                self.log_queue.put(f"Text output saved to: {self._format_path_for_display(output_filename)}\n")
+            except Exception as e:
+                self.log_queue.put(f"ERROR: Could not close text file: {e}\n")
+        if conn:
+            try:
+                conn.close()
+                self.log_queue.put(f"Database saved to: {self._format_path_for_display(database_filename)}\n")
+            except Exception as e:
+                self.log_queue.put(f"ERROR: Could not close database: {e}\n")
+
         
-        # Show completion popup
-        self.after(200, self.show_completion_popup)
+        # Re-enable buttons after lookup is complete
+        self.after(100, lambda: self.run_button.config(state=tk.NORMAL))
+        self.after(100, lambda: self.save_log_button.config(state=tk.NORMAL))
+        self.after(200, self.show_completion_popup) # Call the modified completion popup
 
-    def show_completion_popup(self):
-        """
-        Displays a completion message to the user and offers to open the output folder.
-        """
-        current_format = self.output_format_var.get()
-        if current_format != 'console' and self.actual_output_dir and os.path.isdir(self.actual_output_dir):
-            response = messagebox.askyesno(
-                "Lookup Complete",
-                f"Lookup process completed.\n\nOutput saved to:\n{self._format_path_for_display(self.actual_output_dir)}\n\nDo you want to open the output folder?"
-            )
-            if response:
-                self.open_output_folder(self.actual_output_dir)
-        elif current_format == 'console':
-            messagebox.showinfo("Lookup Complete", "Lookup process completed. Output displayed in console.")
-        else:
-            messagebox.showinfo("Lookup Complete", "Lookup process completed. Output files may not have been saved due to an invalid path.")
-
-    def open_output_folder(self, path):
-        """
-        Opens the specified folder using the default file explorer for the OS.
-        """
-        try:
-            if sys.platform == "win32":
-                os.startfile(path)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", path])
-            else:
-                subprocess.Popen(["xdg-open", path])
-        except Exception as e:
-            messagebox.showerror("Error Opening Folder", f"Could not open folder:\n{self._format_path_for_display(path)}\nError: {e}")
 
     def save_log(self):
         """
-        Saves the content of the console output text area to a text file.
+        Saves the content of the console output text widget to a file.
         """
+        if self.actual_output_dir:
+            default_filename = os.path.join(self.actual_output_dir, f"console_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+        else:
+            default_filename = f"console_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
         file_path = filedialog.asksaveasfilename(
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-            title="Save Console Log As",
-            initialfile=f"console_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            initialfile=os.path.basename(default_filename),
+            initialdir=os.path.dirname(default_filename) if self.actual_output_dir else os.getcwd(),
+            title="Save Console Log",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         if file_path:
             try:
                 with open(file_path, "w") as f:
-                    log_content = self.output_text.get("1.0", tk.END)
-                    f.write(log_content)
-                messagebox.showinfo("Save Log", f"Console log saved successfully to:\n{self._format_path_for_display(file_path)}")
+                    f.write(self.output_text.get(1.0, tk.END))
+                messagebox.showinfo("Success", f"Console log saved to:\n{self._format_path_for_display(file_path)}")
             except Exception as e:
-                messagebox.showerror("Save Log Error", f"Failed to save console log:\n{e}")
+                messagebox.showerror("Error", f"Failed to save console log:\n{e}")
+
+    def open_output_folder(self):
+        """
+        Opens the generated output folder in the system's file explorer.
+        """
+        if self.actual_output_dir and os.path.isdir(self.actual_output_dir):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(self.actual_output_dir)
+                elif sys.platform == "darwin": # macOS
+                    subprocess.Popen(["open", self.actual_output_dir])
+                else: # linux variants
+                    subprocess.Popen(["xdg-open", self.actual_output_dir])
+                self.log_queue.put(f"Opened output folder: {self._format_path_for_display(self.actual_output_dir)}\n")
+            except Exception as e:
+                self.log_queue.put(f"ERROR: Could not open output folder '{self._format_path_for_display(self.actual_output_dir)}': {e}\n")
+                messagebox.showerror("Error", f"Could not open output folder.\nError: {e}")
+        else:
+            messagebox.showinfo("Info", "No valid output folder to open.")
+
+    def show_completion_popup(self):
+        """
+        Displays a popup message upon completion of the lookup process and asks
+        if the user wants to open the output folder.
+        """
+        messagebox.showinfo("Lookup Complete", "The lookup process has finished.")
+        
+        # Only ask to open the folder if one was successfully created
+        if self.actual_output_dir and os.path.isdir(self.actual_output_dir):
+            should_open = messagebox.askyesno(
+                "Open Output Folder?",
+                "Would you like to open the generated output folder?"
+            )
+            if should_open:
+                self.open_output_folder()
+
 
 if __name__ == "__main__":
     app = App()
